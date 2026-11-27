@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { SourceService } from '@modelbridge/runtime'
+import { callControl, controlKeyId } from '../electron/control'
 import { AppState } from '../electron/state'
 
 test.skipIf(
@@ -149,8 +150,24 @@ test.skipIf(
       ).toBe(true)
     } finally {
       if (child && child.exitCode === null) {
-        child.kill()
-        await child.exited
+        const running = child
+        const timer = setTimeout(() => running.kill(), 5_000)
+        try {
+          await Promise.race([
+            callControl(
+              profile,
+              state.vault.get(controlKeyId),
+              'modelbridge:stop',
+              true,
+            ).catch(() => {
+              if (running.exitCode === null) running.kill()
+            }),
+            running.exited,
+          ])
+          await running.exited
+        } finally {
+          clearTimeout(timer)
+        }
       }
       await upstream.stop(true)
       // Electron helper processes can hold profile files briefly after exit.

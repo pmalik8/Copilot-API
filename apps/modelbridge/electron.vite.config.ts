@@ -7,8 +7,11 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin({ exclude: ['@modelbridge/runtime'] })],
     build: {
       rollupOptions: {
-        input: resolve(__dirname, 'electron/main.ts'),
-        output: { entryFileNames: 'index.js' },
+        input: {
+          index: resolve(__dirname, 'electron/main.ts'),
+          cli: resolve(__dirname, 'cli/main.ts'),
+        },
+        output: { entryFileNames: '[name].js' },
       },
     },
   },

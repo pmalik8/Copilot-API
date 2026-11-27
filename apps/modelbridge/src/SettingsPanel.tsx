@@ -4,6 +4,7 @@ import type { AppStatus } from './types'
 import { failure, plural } from './format'
 import { CopyButton, copyText } from './gateway-client'
 import { KeyReveal, type Revealed } from './KeyReveal'
+import { RestoreAppSettings } from './RestoreAppSettings'
 import type { Run } from './shared'
 
 function ClientName({
@@ -299,6 +300,8 @@ interface Props {
   status: AppStatus
   role: Role
   busy: boolean
+  active: boolean
+  onAppRestored: () => void
   run: Run
   revealed: Revealed | null
   onReveal: (remote: boolean) => void
@@ -309,6 +312,8 @@ export function SettingsPanel({
   status,
   role,
   busy,
+  active,
+  onAppRestored,
   run,
   revealed,
   onReveal,
@@ -332,6 +337,7 @@ export function SettingsPanel({
   }
   return (
     <>
+      <RestoreAppSettings active={active} onRestored={onAppRestored} />
       <section>
         <h2>Local gateway</h2>
         <p className="muted">

@@ -29,6 +29,11 @@ OutFile "${executable}"
 RequestExecutionLevel user
 AutoCloseWindow true
 !include "MUI2.nsh"
+!macro ModelBridgeReadDevTunnelEnvironment
+  StrCpy $MBPaths $MBOriginalPath
+  StrCpy $MBUserCliRoot ""
+  StrCpy $MBMachineCliRoot ""
+!macroend
 !macro ModelBridgeDetectDevTunnel
   FileOpen $2 "${probes}" a
   FileSeek $2 0 END
@@ -183,7 +188,14 @@ if ('${action}' -eq 'client') {
       const cliDirectory = path.join(directory, 'CLI with spaces')
       fs.mkdirSync(cliDirectory)
       const cli = path.join(cliDirectory, 'devtunnel.exe')
-      const env = { ...process.env, PATH: `"${cliDirectory}"` }
+      const env = {
+        ...Object.fromEntries(
+          Object.entries(process.env).filter(
+            ([name]) => name.toUpperCase() !== 'PATH',
+          ),
+        ),
+        PATH: `"${cliDirectory}"`,
+      }
       await compile(
         source.replace(
           /!macro ModelBridgeDetectDevTunnel[\s\S]*?!macroend/u,

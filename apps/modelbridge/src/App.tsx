@@ -11,6 +11,7 @@ import type { Revealed } from './KeyReveal'
 import { ModelsPanel } from './ModelsPanel'
 import { Playground, type PlaygroundPreset } from './Playground'
 import { SettingsPanel } from './SettingsPanel'
+import { RestoreAppSettings } from './RestoreAppSettings'
 import type { Run } from './shared'
 
 type Tab =
@@ -111,6 +112,7 @@ export default function App() {
   const [error, setError] = useState('')
   const [revealed, setRevealed] = useState<Revealed | null>(null)
   const [preset, setPreset] = useState<PlaygroundPreset | null>(null)
+  const [appSettingsRevision, setAppSettingsRevision] = useState(0)
   const tabRefs = useRef<Partial<Record<Tab, HTMLButtonElement | null>>>({})
   useEffect(() => {
     let active = true
@@ -216,6 +218,8 @@ export default function App() {
     onReveal: (remote: boolean) => void reveal(remote),
     onHide: () => setRevealed(null),
   }
+  const refreshAppSettings = () =>
+    setAppSettingsRevision((revision) => revision + 1)
   return (
     <main>
       <header>
@@ -276,7 +280,14 @@ export default function App() {
           <p>Starting the local gateway. This usually takes a few seconds.</p>
         </section>
       : !role ?
-        <Welcome busy={busy} onChoose={chooseRole} />
+        <>
+          <Welcome busy={busy} onChoose={chooseRole} />
+          <RestoreAppSettings
+            active
+            onlyWhenAvailable
+            onRestored={refreshAppSettings}
+          />
+        </>
       : <>
           <div
             className="tabs"
@@ -351,6 +362,7 @@ export default function App() {
             <AppsPanel
               status={status}
               role={role}
+              settingsRevision={appSettingsRevision}
               onTry={(next: TryPreset) => {
                 setPreset({ ...next, nonce: Date.now() })
                 select('playground')
@@ -371,6 +383,8 @@ export default function App() {
               status={status}
               role={role}
               busy={busy}
+              active={tab === 'settings'}
+              onAppRestored={refreshAppSettings}
               run={run}
               {...keys}
             />

@@ -67,6 +67,7 @@ async function fixture() {
 }
 test('preview explains exact Codex changes and writes nothing until approval', async () => {
   const { file, service, revisions } = await fixture()
+  expect(service.canRestore()).toBe(false)
   const preview = service.preview(
     'My remote Copilot',
     models[0].id,
@@ -75,6 +76,7 @@ test('preview explains exact Codex changes and writes nothing until approval', a
   )
   expect(fs.readFileSync(file, 'utf8')).toBe(original)
   expect(fs.existsSync(revisions)).toBe(false)
+  expect(service.canRestore()).toBe(false)
   expect(preview.before).toBe(original)
   const value = configValue(preview.after)
   expect(value).toMatchObject({
@@ -131,7 +133,7 @@ test('activation, revision switching, restart and native restoration preserve un
     Object.keys(stored).some((key) => key.startsWith('codex-configurations-')),
   ).toBe(true)
 })
-test('stale previews and external provider edits cannot overwrite newer settings without acknowledgement', async () => {
+test('external edits block configuration but can be reviewed and restored without a model', async () => {
   const { file, service } = await fixture()
   const preview = service.preview('Test', models[0].id, models, url)
   fs.appendFileSync(file, '\n# changed after preview\n')
@@ -146,13 +148,70 @@ test('stale previews and external provider edits cannot overwrite newer settings
   expect(() => service.preview('Test', models[0].id, models, url)).toThrow(
     'outside ModelBridge',
   )
-  expect(() => service.restore()).toThrow('outside ModelBridge')
+  expect(service.canRestore()).toBe(true)
+  const restore = service.restore()
+  expect(restore.changes.join(' ')).toContain('changed outside ModelBridge')
+  expect(restore.before).toContain('external-model')
+  expect(restore.after).toContain('native-model')
+  fs.appendFileSync(file, '\n# changed after restore preview\n')
+  await expect(service.apply(restore.id)).rejects.toThrow('changed after')
+  expect(fs.readFileSync(file, 'utf8')).toContain('external-model')
+  await service.apply(service.restore().id)
+  expect(service.status([])).toMatchObject({
+    active: null,
+    effective: { model: 'native-model', provider: 'openai' },
+  })
+  expect(fs.readFileSync(file, 'utf8')).toContain(
+    'changed after restore preview',
+  )
+
+  fs.writeFileSync(file, original.replace('native-model', 'external-model'))
   await service.reconcile()
   expect(service.status().externalManagedEdit).toBe(false)
   await service.apply(
     service.preview('Reviewed external change', models[1].id, models, url).id,
   )
   expect(service.status().effective.model).toBe(models[1].id)
+})
+
+test('restoring Codex removes a ModelBridge-created file but keeps later unrelated settings', async () => {
+  const { file, service, revisions, vault } = await fixture()
+  fs.unlinkSync(file)
+  await service.apply(service.preview('Fresh', models[0].id, models, url).id)
+  const preview = service.restore()
+  expect(preview.changes.join(' ')).toContain('Remove the configuration file')
+  expect(preview.after).toBe('')
+  await service.apply(preview.id)
+  expect(fs.existsSync(file)).toBe(false)
+  const reopened = await CodexConfigurations.open(
+    file,
+    revisions,
+    vault,
+    helper,
+  )
+  expect(reopened.status().active).toBeNull()
+  await reopened.apply(reopened.preview('Again', models[0].id, models, url).id)
+  fs.appendFileSync(file, '\n[tools]\nweb_search = false\n')
+  await reopened.apply(reopened.restore().id)
+  expect(configValue(fs.readFileSync(file, 'utf8'))).toEqual({
+    tools: { web_search: false },
+  })
+})
+
+test('Codex rollback does not run the credential check required for setup', async () => {
+  const { file, service } = await fixture()
+  const setup = service.preview('Codex setup', models[0].id, models, url)
+  let checks = 0
+  const verify = async () => {
+    checks++
+    throw new Error('Credential helper is unavailable.')
+  }
+  await expect(service.apply(setup.id, verify)).rejects.toThrow('unavailable')
+  expect(fs.readFileSync(file, 'utf8')).toBe(original)
+  await service.apply(setup.id)
+  await service.apply(service.restore().id, verify)
+  expect(checks).toBe(1)
+  expect(service.status().effective.model).toBe('native-model')
 })
 test('status reports when the active Codex model list or default model no longer matches the sources', async () => {
   const { service } = await fixture()
@@ -288,4 +347,44 @@ test('interrupted committed config is recovered from the encrypted journal, not 
     (await CodexConfigurations.open(file, revisions, vault, helper)).status()
       .active,
   ).toBe(preview.id)
+})
+
+test('Codex restore preserves an external edit made while its journal is being saved', async () => {
+  const { file, service, revisions, vault } = await fixture()
+  await service.apply(service.preview('Setup', models[0].id, models, url).id)
+  let editDuringSave = false
+  const restarted = await CodexConfigurations.open(
+    file,
+    revisions,
+    {
+      get: (id) => vault.get(id),
+      set: (id, value) => {
+        vault.set(id, value)
+        if (editDuringSave) {
+          editDuringSave = false
+          fs.appendFileSync(file, '\n# External edit during journal save\n')
+        }
+        return Promise.resolve()
+      },
+      remove: (id) => vault.remove(id),
+    },
+    helper,
+  )
+  const before = fs.readFileSync(file, 'utf8')
+  const restore = restarted.restore()
+  editDuringSave = true
+  await expect(restarted.apply(restore.id)).rejects.toThrow('changed after')
+  expect(fs.readFileSync(file, 'utf8')).toBe(
+    before + '\n# External edit during journal save\n',
+  )
+  const recovered = await CodexConfigurations.open(
+    file,
+    revisions,
+    vault,
+    helper,
+  )
+  await recovered.apply(recovered.restore().id)
+  expect(fs.readFileSync(file, 'utf8')).toContain(
+    'External edit during journal save',
+  )
 })

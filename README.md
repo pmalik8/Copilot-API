@@ -217,9 +217,63 @@ forwards to your hosts, so the tunnel URL is never written into any tool.
   shows its latency, tokens and the raw response, and any request can be copied
   as curl or Python.
 - **Usage by app.** Requests are attributed to Codex, Claude Code, Hermes,
-  OpenClaw, Playground or Other from the User-Agent or the
+  OpenClaw, OpenCode, DeepSeek Harness, Playground or Other from the User-Agent or the
   `x-modelbridge-app` header, which the generated configs set. The Dashboard
   shows a per-app breakdown.
+
+### DeepSeek Harness setup
+
+Select **DeepSeek Harness (Web)** for `dsh web`, or **DeepSeek Harness
+(Desktop)** for the standard desktop profile. Choose a model, preview the
+changes, and apply. Open or restart that profile and start a new session.
+ModelBridge does not install or sign in to DeepSeek Harness.
+
+The setup uses Chat Completions at the local ModelBridge gateway and writes a
+`modelbridge` provider with source-qualified model IDs. It edits only the
+selected profile's `cordis.patch.yml` under `$DSH_HOME/profiles` (default
+`~/.dsh/profiles`). The profile stores a credential reference; only the local
+ModelBridge key is added to `$DSH_HOME/.credentials.yaml`. Other providers,
+DeepSeek sign-in, and unrelated credentials stay in place. **Preview restore**
+reverts the settings and credential reference owned by ModelBridge.
+
+If DeepSeek Harness was launched with a different `DSH_HOME`, use that same
+environment when starting ModelBridge. A custom profile, home-level patch, or
+`--patch` override may use a different model configuration.
+
+### OpenCode setup
+
+Select **OpenCode** in **Apps**, choose a model, preview and apply. The setup
+targets OpenCode 2.x and its shared local-server configuration used by the CLI,
+Web interface and Desktop app. Restart the local OpenCode server and start a
+new session after applying or restoring.
+
+ModelBridge adds only `providers.modelbridge` and the default `model` in the
+user's `opencode.jsonc` or `opencode.json`. JSONC comments, other providers,
+native sign-ins and unrelated settings are preserved. The provider uses the
+local gateway with source-qualified model IDs and only the local gateway key.
+It exposes advertised model limits, input types, tool support and reasoning
+efforts; models without token limits use conservative 32K context/8K output
+limits.
+
+The default directory is `~/.config/opencode`; `XDG_CONFIG_HOME` or
+`OPENCODE_CONFIG_DIR` can override it. An existing JSONC file takes precedence
+over JSON. Use the same directory environment for ModelBridge and the local
+OpenCode server. Project settings and managed policies can override the user
+configuration. This does not configure an OpenCode server running on another
+machine or install OpenCode.
+
+### Restore original app settings
+
+Open **Settings > Restore app settings**, choose an app with a saved backup,
+then select **Preview restore** and **Restore original settings**. This works
+with Codex, Claude Code, Hermes Agent, OpenClaw, OpenCode, and both DeepSeek Harness
+profiles, even when no models are available or the host is offline. Restart
+the restored app and start a new session.
+
+Restore reverts the values ModelBridge managed, preserves unrelated edits and
+sign-ins, and refuses to overwrite a file that changed after previewing. It
+needs the ModelBridge profile containing the backup and does not reset apps
+configured manually. A malformed settings file must be repaired first.
 
 ## What's new in 0.1.1
 
@@ -666,6 +720,96 @@ is a preview service without a production SLA.
 Requires Bun 1.4.2 and Node 22.18+; Windows is the first validated desktop
 platform. Electron is pinned to 43.4.1.
 
+### Command-line interface
+
+The GUI and CLI control the same ModelBridge runtime and data folder. The CLI
+does not import old products or keep a second copy of your connections.
+Build this version before using the development CLI:
+
+```powershell
+bun run build
+bun run cli --help
+bun run cli start
+bun run cli status
+bun run cli models --json
+```
+
+`start` launches the runtime headlessly and reuses it if already running.
+`serve` runs it in the foreground; Ctrl+C stops it. `open` opens the GUI on
+that same runtime. `stop --yes` shuts down the local gateway and sharing
+gracefully. A GUI from an older build must be closed before starting this
+version. Do not run older and newer versions against the same profile.
+
+The Windows package includes `bin\modelbridge.cmd` in the installation,
+using Electron's bundled Node runtime; Node and Bun are not required on the
+installed machine. The installer adds the chosen install folder's `bin`
+directory to your user PATH, so a newly opened terminal can run:
+
+```powershell
+modelbridge --help
+modelbridge start
+modelbridge status
+modelbridge models --json
+```
+
+Close and reopen your terminal after installing (restart the terminal app or
+editor if it keeps the old environment). Reinstalling does not add duplicates,
+and moving the installation replaces its previously added entry. Uninstalling
+removes only ModelBridge's owned entry, preserving unrelated entries and any
+matching entry you added yourself. The machine-wide PATH is never changed.
+If your PATH cannot be updated safely, the installer reports it and leaves it
+unchanged; you can still invoke `bin\modelbridge.cmd` from the install folder.
+
+All commands accept `--user-data-dir <folder>` to select the same isolated
+profile switch as the GUI, and `--json` for machine-readable results.
+The packaged default comes from `data-location.txt`; the development default
+is `%APPDATA%\ModelBridge`. The CLI requires this version's running runtime
+and uses a separate local administration key, not either inference access key.
+No administration endpoint is exposed through the HTTP gateways or tunnel.
+
+```powershell
+# Use an isolated profile without changing your normal setup.
+bun run cli --user-data-dir D:\ModelBridge-Test start
+bun run cli --user-data-dir D:\ModelBridge-Test role client
+bun run cli --user-data-dir D:\ModelBridge-Test sources add --file host.json --key-env MODELBRIDGE_HOST_KEY
+bun run cli --user-data-dir D:\ModelBridge-Test apps setup opencode --model "<exact-source/model-id>"
+bun run cli --user-data-dir D:\ModelBridge-Test apps apply opencode "<preview-id>" --yes
+bun run cli --user-data-dir D:\ModelBridge-Test apps restore opencode --apply --yes
+bun run cli --user-data-dir D:\ModelBridge-Test stop --yes
+```
+
+Source inputs use the same contracts as the GUI. For example, `host.json`:
+
+```json
+{
+  "label": "My host",
+  "kind": "remote",
+  "baseUrl": "https://<host-url>",
+  "protocol": "responses",
+  "shared": false
+}
+```
+
+`--key-env` supplies the key without putting it on the command line. Inputs
+may use `--file -` for JSON from stdin. Other commands cover source editing,
+refresh and sharing selection; Copilot and Dev Tunnels device sign-in; relay
+checks; usage, quota and budgets; Codex discovery/revisions; updates and data
+folder management. Run `--help` for their exact input forms. Device sign-in
+is asynchronous: approve the printed URL/code, then check `copilot status`
+or `tunnel check-login`.
+
+Harness setup/restore uses the GUI's redacted previews and stale-file checks.
+Preview IDs survive a CLI process exiting but expire when another preview
+replaces them or the runtime restarts. `--apply --yes` approves the fresh
+preview in one command. `keys show <local|remote> --yes` explicitly reveals a
+gateway key; normal command output never includes keys.
+
+`request --path /v1/responses --file request.json` provides terminal Playground
+access. Requests retain their complete JSON history and tools, and streamed
+chunks are passed through without a total request deadline. Ctrl+C disconnects
+that request. Request output can include user-supplied prompts/responses, so
+keep terminal captures private. Model requests can consume provider credits.
+
 ```sh
 bun install --frozen-lockfile
 bun run dev
@@ -721,6 +865,45 @@ fixtures. The full wizard test opens the actual installer and cancels before
 installation; it never clicks Install. Set `MODELBRIDGE_TEST_EXPECT_CLI=1`
 on a known-ready host to require successful real CLI detection too.
 This does not prove actual installation, upgrade or uninstall.
+
+### DeepSeek Harness smoke test
+
+With the official `@deepseek-ai/dsh` installed separately and supported Node.js
+on `PATH`, point `MODELBRIDGE_TEST_DSH` at that package's `lib/bin.js`.
+
+```powershell
+$env:MODELBRIDGE_TEST_DSH = 'C:\path\to\@deepseek-ai\dsh\lib\bin.js'
+bun test .\packages\runtime\tests\deepseek-cli.test.ts
+```
+
+For an installed Windows Desktop build, point the same test at the
+installed executable instead. It uses Desktop's bundled headless runner:
+
+```powershell
+$env:MODELBRIDGE_TEST_DSH_EXE = "$env:LOCALAPPDATA\Programs\DeepSeek Harness\DeepSeek Harness.exe"
+bun test .\packages\runtime\tests\deepseek-cli.test.ts
+```
+
+The tests use the real headless runner with the generated Web and Desktop
+profile patches, temporary DeepSeek homes, and a synthetic local model. They
+verify that both patches work and roll back. They do not sign in, send paid
+requests, or open either DeepSeek Harness GUI.
+
+### OpenCode smoke test
+
+Point `MODELBRIDGE_TEST_OPENCODE` at a separately installed OpenCode 2.x
+executable and run:
+
+```powershell
+$env:MODELBRIDGE_TEST_OPENCODE = 'C:\path\to\opencode.exe'
+bun test .\packages\runtime\tests\opencode-cli.test.ts
+```
+
+The test starts a private OpenCode server, loads the generated provider, reads
+a harmless fixture file through a model tool call, and streams the follow-up
+reply through the local gateway. It uses isolated
+config/data/cache directories and never reads a real account or sends a paid
+request. Web and Desktop GUI acceptance remains a separate live check.
 
 ### Codex compatibility proof
 
@@ -778,5 +961,23 @@ legacy release workflows have been retired from the active source tree. They
 remain available in Git history. No remote release assets or tags are deleted.
 ModelBridge releases use `modelbridge-v<version>` and require explicit
 approval of the product/version after validation.
+
+## Windows release assets
+
+Publish a release or pre-release with a `modelbridge-v<version>` tag that
+matches the workspace version and points at the tested commit containing the
+**ModelBridge Windows Release** workflow. The workflow builds from that commit,
+runs the checks and packaged smoke tests, then attaches
+`ModelBridge.Setup.<version>.exe` and `ModelBridge.Setup.<version>.exe.sha256`
+to the release. It does not create releases, move tags, or replace existing
+assets. Watch the run in **Actions** before distributing the release.
+
+Once the workflow is on the default branch, use **Actions > ModelBridge
+Windows Release > Run workflow** on the intended release source to prepare
+a candidate for install and upgrade validation. This only builds and saves
+the two files as a downloadable workflow artifact; it does not modify any
+release. If immutable releases are enabled, attach both files from that
+artifact to the draft **before** publishing, since GitHub locks the release
+assets at publication.
 
 [MIT license](LICENSE) · [Lineage and responsible use](NOTICE.md)

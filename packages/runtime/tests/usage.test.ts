@@ -842,6 +842,9 @@ test('Copilot quota is parsed, cached for a minute and refreshed on demand', asy
 
 test('requests are attributed to the calling app and summarized per app', async () => {
   expect(detectApp('Hermes', undefined, undefined)).toBe('hermes')
+  expect(detectApp('deepseek', 'undici', undefined)).toBe('deepseek')
+  expect(detectApp('opencode', undefined, undefined)).toBe('opencode')
+  expect(detectApp(undefined, 'opencode/2.1.2', undefined)).toBe('opencode')
   expect(
     detectApp(undefined, 'codex_cli_rs/0.50.0 (Windows 10.0)', undefined),
   ).toBe('codex')

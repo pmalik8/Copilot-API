@@ -23,6 +23,8 @@ export const usageApps = [
   'claude-code',
   'hermes',
   'openclaw',
+  'opencode',
+  'deepseek',
   'playground',
   'other',
 ] as const

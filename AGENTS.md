@@ -51,9 +51,10 @@
   setup and protocol adapters require real-tool acceptance beyond synthetic tests.
 - Desktop and runtime are private workspaces of one product with matching
   versions, not independent installer products.
-- No release/update publishing workflow is active during the rebuild. Future
-  tags use `modelbridge-v<version>`, with explicit product/version approval,
-  tested pushed source, installer/checksum and upgrade validation.
+- Tags use `modelbridge-v<version>`, with explicit product/version approval,
+  tested pushed source, installer/checksum and upgrade validation. The release
+  workflow attaches assets after a maintainer publishes a release. Manual
+  workflow runs only build candidate assets; they never publish a release.
 - Never force-push, replace historical tags, delete release assets or uninstall
   old apps merely as part of source restructuring.
 - Retain LICENSE and NOTICE attribution and provider permitted-use boundaries.

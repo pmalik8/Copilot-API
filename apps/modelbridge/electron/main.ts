@@ -22,6 +22,7 @@ import {
   createGateway,
   serve,
   SourceService,
+  withStreamTimeouts,
 } from '@modelbridge/runtime'
 import {
   sharingInputSchema,
@@ -37,6 +38,7 @@ import type { CopilotLogin } from '@modelbridge/runtime/copilot'
 import { CodexConfigurations } from '@modelbridge/runtime/codex'
 import {
   AppConfigurations,
+  configurableApps,
   configurableAppSchema,
 } from '@modelbridge/runtime/apps'
 import { DevTunnels } from '@modelbridge/runtime/dev-tunnels'
@@ -48,6 +50,7 @@ import {
   premiumLimitsSchema,
 } from '@modelbridge/runtime/limits'
 import type {
+  AppRestoreTarget,
   AppStatus,
   CopilotQuotaStatus,
   Result,
@@ -67,6 +70,8 @@ import {
   writeDataRegistry,
 } from './data-location'
 import { downloadUpdate, findUpdate, type UpdateState } from './updates'
+import { channels, type Channel, type EmitChunk } from './channels'
+import { controlKeyId, startControlServer } from './control'
 
 app.setName('ModelBridge')
 app.setAppUserModelId('com.rajathnaik.modelbridge')
@@ -94,60 +99,18 @@ let usageLedger: UsageLedger | null = null
 const transport = new TunnelProcess()
 let copilotController: AbortController | null = null
 const credentialMode = process.argv.includes('--modelbridge-credential')
+const headless = process.argv.includes('--modelbridge-headless')
+let controlServer: Awaited<ReturnType<typeof startControlServer>> | null = null
 const diagnostics = createDiagnosticsLog(app.getPath('userData'))
 const log = (event: string, detail?: string) => {
   if (!credentialMode) void diagnostics.write(event, detail)
 }
-const channels = [
-  'modelbridge:status',
-  'modelbridge:local-key',
-  'modelbridge:remote-key',
-  'modelbridge:copilot-login',
-  'modelbridge:copilot-cancel',
-  'modelbridge:open-login',
-  'modelbridge:refresh-source',
-  'modelbridge:codex-status',
-  'modelbridge:codex-discover',
-  'modelbridge:codex-select',
-  'modelbridge:codex-preview',
-  'modelbridge:codex-revision',
-  'modelbridge:codex-restore',
-  'modelbridge:codex-apply',
-  'modelbridge:codex-reconcile',
-  'modelbridge:add-source',
-  'modelbridge:update-source',
-  'modelbridge:remove-source',
-  'modelbridge:share-source',
-  'modelbridge:web-search-model',
-  'modelbridge:tunnel-login',
-  'modelbridge:tunnel-check-login',
-  'modelbridge:sharing-start',
-  'modelbridge:sharing-stop',
-  'modelbridge:tunnel-check',
-  'modelbridge:tunnel-settings',
-  'modelbridge:set-role',
-  'modelbridge:set-client-name',
-  'modelbridge:usage',
-  'modelbridge:premium-limits',
-  'modelbridge:usage-clear',
-  'modelbridge:copilot-quota',
-  'modelbridge:playground-send',
-  'modelbridge:playground-cancel',
-  'modelbridge:copy-text',
-  'modelbridge:copy-key',
-  'modelbridge:app-config-status',
-  'modelbridge:app-config-preview',
-  'modelbridge:app-config-restore',
-  'modelbridge:app-config-apply',
-  'modelbridge:update-check',
-  'modelbridge:update-install',
-  'modelbridge:open-release',
-  'modelbridge:data-choose',
-  'modelbridge:data-move',
-  'modelbridge:data-open',
-] as const
-type Channel = (typeof channels)[number]
-const operations = new Map<Channel, (value: unknown) => unknown>()
+type Operation<T = unknown> = (
+  value: unknown,
+  emit?: EmitChunk,
+  disconnected?: AbortSignal,
+) => T
+const operations = new Map<Channel, Operation>()
 let runtimeReady: Promise<void> = new Promise(() => undefined)
 const playgroundRequestSchema = z
   .object({
@@ -163,6 +126,30 @@ const playgroundRequestSchema = z
   })
   .strict()
 
+async function invokeAction(
+  channel: Channel,
+  value: unknown,
+  emit?: EmitChunk,
+  disconnected?: AbortSignal,
+): Promise<Result<unknown>> {
+  try {
+    await runtimeReady
+    const operation = operations.get(channel)
+    if (!operation) throw new Error('This ModelBridge action is unavailable.')
+    return { ok: true, value: await operation(value, emit, disconnected) }
+  } catch (error) {
+    console.error(`[ModelBridge] ${channel} failed.`)
+    log(`${channel} failed`, describeError(error))
+    return {
+      ok: false,
+      error:
+        error instanceof Error ?
+          error.message
+        : 'ModelBridge operation failed.',
+    }
+  }
+}
+
 function registerIpc(): void {
   for (const channel of channels)
     ipcMain.handle(
@@ -177,21 +164,7 @@ function registerIpc(): void {
             ok: false,
             error: 'Only the ModelBridge main window may perform this action.',
           }
-        try {
-          await runtimeReady
-          const operation = operations.get(channel)
-          if (!operation)
-            throw new Error('This ModelBridge action is unavailable.')
-          return { ok: true, value: await operation(value) }
-        } catch (error) {
-          const message =
-            error instanceof Error ?
-              error.message
-            : 'ModelBridge operation failed.'
-          console.error(`[ModelBridge] ${channel} failed.`)
-          log(`${channel} failed`, describeError(error))
-          return { ok: false, error: message }
-        }
+        return invokeAction(channel, value)
       },
     )
 }
@@ -295,7 +268,7 @@ async function initialize(): Promise<void> {
     transport.refreshUser().catch((error: unknown) => {
       log('tunnel account check failed', describeError(error))
     })
-  void refreshTunnelUser()
+  if (!headless) void refreshTunnelUser()
   // The user's intent; stays true while an automatic reconnect is pending.
   let sharingWanted = false
   let remotePort = 4322
@@ -484,10 +457,7 @@ async function initialize(): Promise<void> {
     copilotLogin,
     copilotError,
   })
-  const handle = <T>(
-    channel: Channel,
-    operation: (value: unknown) => T | Promise<T>,
-  ) => {
+  const handle = <T>(channel: Channel, operation: Operation<T>) => {
     operations.set(channel, operation)
   }
   handle('modelbridge:status', snapshot)
@@ -569,7 +539,7 @@ async function initialize(): Promise<void> {
   handle('modelbridge:codex-status', () => codex.status(sources.models()))
   handle('modelbridge:codex-discover', async () => {
     const found = await discoverCodex()
-    codexVerified = found.installations.length > 0
+    codexVerified = codexVerified || found.installations.length > 0
     return found
   })
   handle('modelbridge:codex-select', async () => {
@@ -585,6 +555,11 @@ async function initialize(): Promise<void> {
         'Codex executable selection was cancelled. No settings were changed.',
       )
     const installation = await inspectCodex(selected.filePaths[0])
+    codexVerified = true
+    return installation
+  })
+  handle('modelbridge:codex-select-path', async (input) => {
+    const installation = await inspectCodex(z.string().min(1).parse(input))
     codexVerified = true
     return installation
   })
@@ -612,21 +587,26 @@ async function initialize(): Promise<void> {
     ),
   )
   handle('modelbridge:codex-restore', () => codex.restore())
-  handle('modelbridge:codex-apply', async (input) => {
-    const env = { ...process.env }
-    delete env.ELECTRON_RUN_AS_NODE
-    const { stdout } = await promisify(execFile)(helper.command, helper.args, {
-      env,
-      timeout: 30_000,
-      windowsHide: true,
-      maxBuffer: 64 * 1024,
-    })
-    if (stdout.trim() !== state.vault.get('local-access'))
-      throw new Error(
-        'The installed app could not retrieve the expected protected Codex key. No harness configuration was changed.',
+  handle('modelbridge:codex-apply', (input) =>
+    codex.apply(z.string().uuid().parse(input), async () => {
+      const env = { ...process.env }
+      delete env.ELECTRON_RUN_AS_NODE
+      const { stdout } = await promisify(execFile)(
+        helper.command,
+        helper.args,
+        {
+          env,
+          timeout: 30_000,
+          windowsHide: true,
+          maxBuffer: 64 * 1024,
+        },
       )
-    return codex.apply(z.string().uuid().parse(input))
-  })
+      if (stdout.trim() !== state.vault.get('local-access'))
+        throw new Error(
+          'The installed app could not retrieve the expected protected Codex key. No harness configuration was changed.',
+        )
+    }),
+  )
   handle('modelbridge:codex-reconcile', () => codex.reconcile())
   handle('modelbridge:add-source', async (input) => {
     const added = await sources.add(sourceInputSchema.parse(input))
@@ -787,32 +767,33 @@ async function initialize(): Promise<void> {
     )
   })
   const playgroundRequests = new Map<string, AbortController>()
-  handle('modelbridge:playground-send', async (input) => {
+  handle('modelbridge:playground-send', async (input, emit, disconnected) => {
     const value = playgroundRequestSchema.parse(input)
     if (playgroundRequests.has(value.id))
       throw new Error('This playground request is already running.')
     const controller = new AbortController()
+    const signal =
+      disconnected ?
+        AbortSignal.any([controller.signal, disconnected])
+      : controller.signal
     playgroundRequests.set(value.id, controller)
     const started = performance.now()
     const elapsed = () => Math.round(performance.now() - started)
     try {
       // Requests take the same local gateway path as real coding tools.
-      const response = await fetch(
-        `http://127.0.0.1:${local.port}${value.path}`,
-        {
-          method: value.body === undefined ? 'GET' : 'POST',
-          headers: {
-            authorization: `Bearer ${state.vault.get('local-access')}`,
-            'content-type': 'application/json',
-            [appHeader]: 'playground',
-          },
-          ...(value.body !== undefined && { body: JSON.stringify(value.body) }),
-          signal: AbortSignal.any([
-            controller.signal,
-            AbortSignal.timeout(300_000),
-          ]),
+      const response = await withStreamTimeouts(fetch, {
+        headers: 300_000,
+        idle: 330_000,
+      })(`http://127.0.0.1:${local.port}${value.path}`, {
+        method: value.body === undefined ? 'GET' : 'POST',
+        headers: {
+          authorization: `Bearer ${state.vault.get('local-access')}`,
+          'content-type': 'application/json',
+          [appHeader]: 'playground',
         },
-      )
+        ...(value.body !== undefined && { body: JSON.stringify(value.body) }),
+        signal,
+      })
       let firstChunkMs: number | null = null
       let received = 0
       const reader = response.body?.getReader()
@@ -828,17 +809,19 @@ async function initialize(): Promise<void> {
             'The playground reply exceeded 16 MB and was stopped.',
           )
         }
-        window?.webContents.send('modelbridge:playground-chunk', {
+        const event = {
           id: value.id,
           text: decoder.decode(chunk, { stream: true }),
-        })
+        }
+        if (emit) await emit(event)
+        else window?.webContents.send('modelbridge:playground-chunk', event)
       }
       const tail = decoder.decode()
-      if (tail)
-        window?.webContents.send('modelbridge:playground-chunk', {
-          id: value.id,
-          text: tail,
-        })
+      if (tail) {
+        const event = { id: value.id, text: tail }
+        if (emit) await emit(event)
+        else window?.webContents.send('modelbridge:playground-chunk', event)
+      }
       return {
         status: response.status,
         contentType: response.headers.get('content-type') ?? '',
@@ -847,7 +830,7 @@ async function initialize(): Promise<void> {
         cancelled: false,
       }
     } catch (error) {
-      if (controller.signal.aborted)
+      if (signal.aborted)
         return {
           status: 0,
           contentType: '',
@@ -857,6 +840,7 @@ async function initialize(): Promise<void> {
         }
       throw error
     } finally {
+      controller.abort()
       playgroundRequests.delete(value.id)
     }
   })
@@ -880,6 +864,14 @@ async function initialize(): Promise<void> {
       sources.models(),
     ),
   )
+  handle('modelbridge:app-restore-targets', (): AppRestoreTarget[] => [
+    ...(codex.canRestore() ?
+      [{ app: 'codex' as const, configPath: codex.configPath }]
+    : []),
+    ...configurableApps
+      .filter((app) => appConfigurations.canRestore(app))
+      .map((app) => ({ app, configPath: appConfigurations.configPath(app) })),
+  ])
   handle('modelbridge:app-config-preview', (input) => {
     const { app: target, modelId } = z
       .object({ app: configurableAppSchema, modelId: z.string().min(1) })
@@ -895,9 +887,19 @@ async function initialize(): Promise<void> {
   handle('modelbridge:app-config-restore', (input) =>
     appConfigurations.restore(configurableAppSchema.parse(input)),
   )
-  handle('modelbridge:app-config-apply', (input) =>
-    appConfigurations.apply(z.string().uuid().parse(input)),
-  )
+  handle('modelbridge:app-config-apply', (input) => {
+    const target = z
+      .union([
+        z.string().uuid(),
+        z
+          .object({ id: z.string().uuid(), app: configurableAppSchema })
+          .strict(),
+      ])
+      .parse(input)
+    return typeof target === 'string' ?
+        appConfigurations.apply(target)
+      : appConfigurations.apply(target.id, target.app)
+  })
   handle('modelbridge:update-check', async () => {
     await checkForUpdate()
     return snapshot()
@@ -1032,12 +1034,27 @@ async function initialize(): Promise<void> {
     const failed = await shell.openPath(app.getPath('userData'))
     if (failed) throw new Error(failed)
   })
+  handle('modelbridge:open-window', () => {
+    showWindow()
+    return snapshot()
+  })
+  handle('modelbridge:stop', (input) => {
+    z.literal(true).parse(input)
+    setTimeout(() => app.quit(), 200)
+    return { stopping: true }
+  })
   const missing = channels.filter((channel) => !operations.has(channel))
   if (missing.length)
     throw new Error(`ModelBridge actions are missing: ${missing.join(', ')}`)
+  controlServer = await startControlServer(
+    app.getPath('userData'),
+    state.vault.get(controlKeyId),
+    invokeAction,
+  )
 }
 
 function showWindow(): void {
+  if (!window) createWindow()
   if (!window) return
   if (window.isMinimized()) window.restore()
   window.show()
@@ -1109,6 +1126,7 @@ app.on('before-quit', (event) => {
   copilotController?.abort(new Error('ModelBridge is shutting down.'))
   void transport
     .dispose()
+    .then(() => controlServer?.close())
     .then(() =>
       Promise.all([closeServer(localServer), closeServer(remoteServer)]),
     )
@@ -1154,9 +1172,14 @@ if (credentialMode) {
     })
 } else if (!app.requestSingleInstanceLock()) app.quit()
 else {
-  app.on('second-instance', () => {
-    log('second launch focused the running window')
-    showWindow()
+  app.on('second-instance', (_event, argv) => {
+    if (!argv.includes('--modelbridge-headless')) {
+      log('second launch focused the running window')
+      void app
+        .whenReady()
+        .then(() => runtimeReady)
+        .then(showWindow)
+    }
   })
   app.on('child-process-gone', (_event, details) =>
     log('child process gone', `${details.type} ${details.reason}`),
@@ -1166,17 +1189,22 @@ else {
     .then(async () => {
       log('app ready', `version ${app.getVersion()}`)
       registerIpc()
-      createWindow()
+      if (!headless) createWindow()
       runtimeReady = initialize()
       await runtimeReady
       log('runtime ready')
     })
     .catch(async (error: unknown) => {
       await diagnostics.write('startup failed', describeError(error))
-      dialog.showErrorBox(
-        'ModelBridge startup failed',
-        `${error instanceof Error ? error.message : 'Unknown startup error.'}\n\nDiagnostics: ${diagnostics.file}`,
-      )
+      const message = `${error instanceof Error ? error.message : 'Unknown startup error.'}\n\nDiagnostics: ${diagnostics.file}`
+      if (headless)
+        process.stderr.write(`ModelBridge startup failed: ${message}\n`)
+      else dialog.showErrorBox('ModelBridge startup failed', message)
       app.exit(1)
     })
+}
+if (headless) {
+  app.on('window-all-closed', () => undefined)
+  process.on('SIGINT', () => app.quit())
+  process.on('SIGTERM', () => app.quit())
 }
