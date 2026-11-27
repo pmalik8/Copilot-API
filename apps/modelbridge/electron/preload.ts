@@ -67,6 +67,8 @@ const api: ModelBridgeAPI = {
   copyKey: (remote) => ipcRenderer.invoke('modelbridge:copy-key', remote),
   appConfigStatus: (app) =>
     ipcRenderer.invoke('modelbridge:app-config-status', app),
+  appRestoreTargets: () =>
+    ipcRenderer.invoke('modelbridge:app-restore-targets'),
   previewAppConfig: (app, modelId) =>
     ipcRenderer.invoke('modelbridge:app-config-preview', { app, modelId }),
   previewAppRestore: (app) =>

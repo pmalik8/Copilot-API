@@ -33,6 +33,7 @@
     "directories": { "output": "release" },
     "files": ["out/**/*", "assets/**/*"],
     "extraFiles": [
+      { "from": "cli/modelbridge.cmd", "to": "bin/modelbridge.cmd" },
       { "from": "../../LICENSE", "to": "LICENSE" },
       { "from": "../../NOTICE.md", "to": "NOTICE.md" }
     ],

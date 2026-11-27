@@ -28,9 +28,9 @@ test('one clean-slate product has matching versions and a distinct Windows ident
   expect(desktop.build).not.toHaveProperty('publish')
   expect(workspace.scripts).not.toHaveProperty('build:connector')
   expect(workspace.scripts).not.toHaveProperty('build:gateway')
-  expect(fs.readdirSync(path.join(root, '.github', 'workflows'))).toEqual([
-    'ci.yml',
-  ])
+  expect(
+    fs.readdirSync(path.join(root, '.github', 'workflows')).sort(),
+  ).toEqual(['ci.yml', 'modelbridge-release.yml'])
   expect(
     fs.existsSync(path.join(root, 'apps', 'connector', 'package.json')),
   ).toBe(false)
@@ -41,6 +41,35 @@ test('one clean-slate product has matching versions and a distinct Windows ident
     expect(
       fs.existsSync(path.resolve(root, 'packages', 'runtime', entry)),
     ).toBe(true)
+})
+
+test('only published ModelBridge releases can attach validated Windows assets', () => {
+  const source = fs.readFileSync(
+    path.join(root, '.github', 'workflows', 'modelbridge-release.yml'),
+    'utf8',
+  )
+  const workflow: unknown = Bun.YAML.parse(source)
+  expect(workflow).toMatchObject({
+    on: { release: { types: ['published'] }, workflow_dispatch: null },
+    permissions: { contents: 'read' },
+    concurrency: { 'cancel-in-progress': false },
+    jobs: {
+      build: {
+        if: "github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/modelbridge-v')",
+        'runs-on': 'windows-latest',
+      },
+      'attach-assets': {
+        if: "github.event_name == 'release'",
+        needs: 'build',
+        permissions: { contents: 'write' },
+      },
+    },
+  })
+  expect(source).toContain('bun install --frozen-lockfile')
+  expect(source).toContain('bun run test')
+  expect(source).toContain('bun run --cwd apps/modelbridge package:win')
+  expect(source).toContain('sha256sum --check "$INSTALLER.sha256"')
+  expect(source).not.toContain('--clobber')
 })
 
 test('runtime modules do not depend on Electron, legacy shells, globals or compatibility imports', () => {

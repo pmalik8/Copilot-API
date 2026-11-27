@@ -67,6 +67,11 @@ export interface AppStatus {
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string }
 
+export interface AppRestoreTarget {
+  app: 'codex' | ConfigurableApp
+  configPath: string
+}
+
 export interface SourceHealth {
   ok: boolean
   checkedAt: string
@@ -161,6 +166,7 @@ export interface ModelBridgeAPI {
   copyText(text: string): Promise<Result<void>>
   copyKey(remote: boolean): Promise<Result<void>>
   appConfigStatus(app: ConfigurableApp): Promise<Result<AppConfigurationStatus>>
+  appRestoreTargets(): Promise<Result<AppRestoreTarget[]>>
   previewAppConfig(
     app: ConfigurableApp,
     modelId: string,

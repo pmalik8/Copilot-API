@@ -1,0 +1,140 @@
+name: ModelBridge Windows Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: modelbridge-release-${{ github.event.release.id || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/modelbridge-v')
+    runs-on: windows-latest
+    timeout-minutes: 30
+    outputs:
+      installer: ${{ steps.version.outputs.installer }}
+      artifact-id: ${{ steps.artifact.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate release version
+        id: version
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          $version = (Get-Content -Raw -LiteralPath 'package.json' | ConvertFrom-Json).version
+          if ($version -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\z') {
+            throw 'The package version is not supported by the ModelBridge updater.'
+          }
+          if ($env:GITHUB_EVENT_NAME -eq 'release' -and $env:RELEASE_TAG -cne "modelbridge-v$version") {
+            throw "Release tag must be modelbridge-v$version to match the package version."
+          }
+          "installer=ModelBridge.Setup.$version.exe" >> $env:GITHUB_OUTPUT
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22.18.0"
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.2"
+      - run: bun install --frozen-lockfile
+      - run: bun run lint:all
+      - run: bun run typecheck:all
+      - run: bun run test
+      - name: Build Windows installer
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: bun run --cwd apps/modelbridge package:win
+      - name: Smoke-test packaged desktop and CLI
+        working-directory: apps/modelbridge
+        shell: pwsh
+        run: |
+          $env:MODELBRIDGE_TEST_PACKAGED_EXE = (Get-Item -LiteralPath 'release/win-unpacked/ModelBridge.exe').FullName
+          bun test ./tests/packaged-profile.test.ts ./tests/packaged-cli.test.ts
+      - name: Generate SHA-256 checksum
+        shell: pwsh
+        env:
+          INSTALLER: ${{ steps.version.outputs.installer }}
+        run: |
+          $file = (Get-Item -LiteralPath "apps/modelbridge/release/$env:INSTALLER").FullName
+          $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("$file.sha256", "$hash  $env:INSTALLER`n")
+      - name: Save tested release files
+        id: artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: modelbridge-windows-${{ github.run_attempt }}
+          path: |
+            apps/modelbridge/release/${{ steps.version.outputs.installer }}
+            apps/modelbridge/release/${{ steps.version.outputs.installer }}.sha256
+          compression-level: 0
+          if-no-files-found: error
+
+  attach-assets:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          path: release-assets
+      - name: Attach installer and checksum
+        working-directory: release-assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_ID: ${{ github.event.release.id }}
+          INSTALLER: ${{ needs.build.outputs.installer }}
+        run: |
+          sha256sum --check "$INSTALLER.sha256"
+          release="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")"
+          jq -e --arg tag "$RELEASE_TAG" '.tag_name == $tag and .draft == false' <<< "$release" > /dev/null
+          tagged_commit="$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)"
+          if [[ "$tagged_commit" != "$GITHUB_SHA" ]]; then
+            echo "::error::The release tag no longer points to the tested commit."
+            exit 1
+          fi
+
+          files=("$INSTALLER.sha256" "$INSTALLER")
+          if jq -e --arg exe "$INSTALLER" --arg sum "$INSTALLER.sha256" \
+            'any(.assets[]; .name == $exe and .state == "uploaded")
+             and any(.assets[]; .name == $sum and .state == "uploaded")' <<< "$release" > /dev/null; then
+            echo "Both assets are already attached. Leaving the release unchanged."
+            exit 0
+          fi
+          if jq -e '.immutable == true' <<< "$release" > /dev/null; then
+            echo "::error::Immutable releases must have both files attached before publication. Use the manual build artifacts for a draft release."
+            exit 1
+          fi
+
+          # A retried upload may resume only if any existing file matches this build.
+          missing=()
+          for file in "${files[@]}"; do
+            existing="$(jq -c --arg name "$file" '.assets[] | select(.name == $name)' <<< "$release")"
+            if [[ -z "$existing" ]]; then
+              missing+=("$file")
+            else
+              digest="$(sha256sum "$file" | cut -d ' ' -f1)"
+              if ! jq -e --arg digest "sha256:$digest" \
+                '.state == "uploaded" and .digest == $digest' <<< "$existing" > /dev/null; then
+                echo "::error::Existing asset $file differs from this build. No assets were changed."
+                exit 1
+              fi
+            fi
+          done
+          for file in "${missing[@]}"; do
+            gh release upload "$RELEASE_TAG" "$file" --repo "$GITHUB_REPOSITORY"
+          done

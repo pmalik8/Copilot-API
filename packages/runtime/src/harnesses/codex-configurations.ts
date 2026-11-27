@@ -32,7 +32,7 @@ const savedSchema = z.object({
   pending: z
     .object({
       before: z.string().nullable(),
-      after: z.string(),
+      after: z.string().nullable(),
       revisionId: z.string(),
     })
     .nullable(),
@@ -74,7 +74,7 @@ export class CodexConfigurations {
     {
       preview: CodexPreview
       before: string | null
-      content: string
+      content: string | null
       revision: z.infer<typeof revisionSchema>
     }
   >()
@@ -123,7 +123,7 @@ export class CodexConfigurations {
       if (!revision)
         throw new Error('Codex configuration recovery is missing its revision.')
       saved.active = revision.action === 'restore' ? null : revision.id
-      saved.fingerprint = managedFingerprint(pending.after)
+      saved.fingerprint = managedFingerprint(pending.after ?? '')
     } else if (current !== pending.before)
       throw new Error(
         'An interrupted Codex configuration change conflicts with an external edit. Preserve both profiles for recovery.',
@@ -192,9 +192,14 @@ export class CodexConfigurations {
     }
   }
 
+  canRestore(): boolean {
+    return this.saved !== null
+  }
+
   private prepare(
     label: string,
-    content: string,
+    before: string | null,
+    content: string | null,
     catalog: string,
     model: string,
     action: 'configure' | 'restore',
@@ -203,11 +208,10 @@ export class CodexConfigurations {
       throw new Error(
         'A previous Codex change needs recovery. Restart ModelBridge before editing.',
       )
-    const before = readOptional(this.configPath)
-    if (
-      this.saved
+    const external =
+      this.saved !== null
       && managedFingerprint(before ?? '') !== this.saved.fingerprint
-    )
+    if (action === 'configure' && external)
       throw new Error(
         'Codex provider/model settings were changed outside ModelBridge. Review the current settings before explicitly reconciling them.',
       )
@@ -223,7 +227,7 @@ export class CodexConfigurations {
       model,
       createdAt: new Date().toISOString(),
       catalog,
-      content,
+      content: content ?? '',
       action,
     })
     const preview = {
@@ -232,12 +236,22 @@ export class CodexConfigurations {
       configPath: this.configPath,
       catalogPath,
       before: redactConfig(before ?? ''),
-      after: redactConfig(content),
+      after: redactConfig(content ?? ''),
       changes:
         action === 'restore' ?
           [
             'Restore the original provider/model/catalog/reasoning settings.',
             'Preserve current unrelated settings and native auth.json/keychain.',
+            ...(content === null ?
+              [
+                'Remove the configuration file ModelBridge created; no unrelated settings remain.',
+              ]
+            : []),
+            ...(external ?
+              [
+                'Restoring replaces provider/model settings changed outside ModelBridge. Review those changes below before confirming.',
+              ]
+            : []),
           ]
         : [
             'model_provider selects the independent modelbridge provider, not the ChatGPT backend.',
@@ -270,7 +284,8 @@ export class CodexConfigurations {
     if (Buffer.byteLength(catalog) > 1024 * 1024)
       throw new Error('Codex catalog exceeds its 1 MiB client limit.')
     const id = randomUUID()
-    const content = configureCodex(readOptional(this.configPath) ?? '', {
+    const before = readOptional(this.configPath)
+    const content = configureCodex(before ?? '', {
       model: model.id,
       url,
       catalogPath: path.join(this.directory, `${id}.models.json`),
@@ -280,6 +295,7 @@ export class CodexConfigurations {
     })
     const preview = this.prepare(
       validLabel,
+      before,
       content,
       catalog,
       model.id,
@@ -299,12 +315,12 @@ export class CodexConfigurations {
       throw new Error(
         'No original Codex configuration has been saved by this installation.',
       )
+    const before = readOptional(this.configPath)
+    const restored = restoreCodex(before ?? '', this.saved.original ?? '')
     return this.prepare(
       'Restore native Codex',
-      restoreCodex(
-        readOptional(this.configPath) ?? '',
-        this.saved.original ?? '',
-      ),
+      before,
+      this.saved.original === null && !restored.trim() ? null : restored,
       '',
       '',
       'restore',
@@ -340,8 +356,15 @@ export class CodexConfigurations {
     })
   }
 
-  async apply(id: string): Promise<CodexConfigurationStatus> {
-    return this.exclusive(() => this.write(id))
+  async apply(
+    id: string,
+    verifyCredential?: () => Promise<void>,
+  ): Promise<CodexConfigurationStatus> {
+    return this.exclusive(async () => {
+      if (this.previews.get(id)?.revision.action === 'configure')
+        await verifyCredential?.()
+      return this.write(id)
+    })
   }
 
   private async exclusive<T>(operation: () => Promise<T>): Promise<T> {
@@ -383,11 +406,23 @@ export class CodexConfigurations {
       },
     }
     await this.persist(next)
-    atomicWrite(this.configPath, content)
+    // Saving the journal yields to other editors, so check the file again.
+    if (hash(readOptional(this.configPath)) !== hash(operation.before)) {
+      await this.persist({
+        ...next,
+        revisions: next.revisions.slice(0, -1),
+        pending: null,
+      })
+      throw new Error(
+        'Codex configuration changed after the preview. Nothing was overwritten; generate a fresh preview.',
+      )
+    }
+    if (content === null) fs.rmSync(this.configPath, { force: true })
+    else atomicWrite(this.configPath, content)
     await this.persist({
       ...next,
       active: revision.action === 'restore' ? null : revision.id,
-      fingerprint: managedFingerprint(content),
+      fingerprint: managedFingerprint(content ?? ''),
       pending: null,
     })
     this.previews.clear()

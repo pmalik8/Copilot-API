@@ -77,6 +77,7 @@ export function detectApp(
     return 'claude-code'
   if (agent.includes('hermes')) return 'hermes'
   if (agent.includes('openclaw')) return 'openclaw'
+  if (agent.includes('opencode')) return 'opencode'
   return 'other'
 }
 

@@ -10,6 +10,7 @@ import {
   readOptional,
   CredentialStore,
 } from '@modelbridge/runtime/credentials'
+import { controlKeyId } from './control'
 
 export const credentialsFile = 'credentials.json'
 const legacyCredentialsFile = 'credentials.encrypted.json'
@@ -76,14 +77,16 @@ export class AppState {
       : stateSchema.parse(JSON.parse(saved))
     const vault = CredentialStore.open(storeFile)
     const state = new AppState(file, value, vault, archived)
-    const missing = ['local-access', 'remote-access'].filter((id) => {
-      try {
-        vault.get(id)
-        return false
-      } catch {
-        return true
-      }
-    })
+    const missing = ['local-access', 'remote-access', controlKeyId].filter(
+      (id) => {
+        try {
+          vault.get(id)
+          return false
+        } catch {
+          return true
+        }
+      },
+    )
     if (missing.length > 0)
       vault.setMany(
         Object.fromEntries(

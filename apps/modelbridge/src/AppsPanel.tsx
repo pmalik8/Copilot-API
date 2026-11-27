@@ -21,9 +21,6 @@ import type { AppStatus, Result } from './types'
 
 export type TryPreset = Omit<PlaygroundPreset, 'nonce'>
 
-const configurable = (id: string): id is ConfigurableApp =>
-  id === 'claude-code' || id === 'hermes' || id === 'openclaw'
-
 const multiplier = (model: AvailableModel) => model.premiumMultiplier ?? 0
 
 const cost = (model: AvailableModel) =>
@@ -38,10 +35,12 @@ const byCost = (models: AvailableModel[]) =>
 export function AppsPanel({
   status,
   role,
+  settingsRevision,
   onTry,
 }: {
   status: AppStatus
   role: Role
+  settingsRevision: number
   onTry: (preset: TryPreset) => void
 }) {
   const [appId, setAppId] = useState(apps[0].id)
@@ -85,10 +84,15 @@ export function AppsPanel({
       <ConnectionDetails info={info} base={base} models={models} />
       {info.id === 'codex' ?
         <div className="app-card">
-          <CodexPanel models={status.models} />
+          <CodexPanel key={settingsRevision} models={status.models} />
         </div>
-      : configurable(info.id) ?
-        <HarnessSetup key={info.id} app={info.id} info={info} models={models} />
+      : info.automatic ?
+        <HarnessSetup
+          key={`${info.id}:${settingsRevision}`}
+          app={info.id}
+          info={info}
+          models={models}
+        />
       : <ManualSetup
           key={info.id}
           info={info}
@@ -470,7 +474,7 @@ async function configured(info: AppInfo): Promise<string> {
       throw new Error('Codex settings were changed outside ModelBridge.')
     return `Default model ${result.value.effective.model}`
   }
-  if (!configurable(info.id)) return 'Configured manually'
+  if (!info.automatic) return 'Configured manually'
   const result = await window.modelbridge.appConfigStatus(info.id)
   if (!result.ok) throw new Error(result.error)
   if (result.value.error) throw new Error(result.value.error)

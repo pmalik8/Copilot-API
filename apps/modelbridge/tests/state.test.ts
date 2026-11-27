@@ -24,8 +24,11 @@ test('fresh state creates distinct stable access keys and a persistent installat
   expect(state.archivedLegacyProfile).toBeNull()
   const local = state.vault.get('local-access')
   const remote = state.vault.get('remote-access')
+  const admin = state.vault.get('cli-access')
   expect(local).toHaveLength(64)
   expect(local).not.toBe(remote)
+  expect(admin).not.toBe(local)
+  expect(admin).not.toBe(remote)
   const restarted = AppState.open(path.join(root, 'ModelBridge'))
   expect(restarted.value.tunnelId).toBe(state.value.tunnelId)
   expect(restarted.vault.get('local-access')).toBe(local)
@@ -37,7 +40,11 @@ test('fresh state creates distinct stable access keys and a persistent installat
         'utf8',
       ),
     ),
-  ).toEqual({ 'local-access': local, 'remote-access': remote })
+  ).toEqual({
+    'local-access': local,
+    'remote-access': remote,
+    'cli-access': admin,
+  })
   expect(fs.readFileSync(path.join(root, 'legacy-config.json'), 'utf8')).toBe(
     '{"untouched":true}',
   )

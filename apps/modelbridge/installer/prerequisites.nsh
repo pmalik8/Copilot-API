@@ -39,6 +39,8 @@
   StrCpy $isForceCurrentInstall "1"
 !macroend
 
+!include "${__FILEDIR__}\cli-path.nsh"
+
 !ifndef BUILD_UNINSTALLER
 !include "MUI2.nsh"
 !include "nsDialogs.nsh"
@@ -62,6 +64,23 @@ Var MBCandidate
 Var MBRoot
 Var MBFind
 Var MBEntry
+Var MBUserCliRoot
+Var MBMachineCliRoot
+
+!ifmacrondef ModelBridgeReadDevTunnelEnvironment
+  !macro ModelBridgeReadDevTunnelEnvironment
+    ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
+    ReadRegStr $1 HKCU "Environment" "Path"
+    ExpandEnvStrings $0 $0
+    ExpandEnvStrings $1 $1
+    StrCpy $MBPaths "$MBOriginalPath;$0;$1"
+    ReadEnvStr $MBUserCliRoot "LOCALAPPDATA"
+    ReadEnvStr $MBMachineCliRoot "ProgramW6432"
+    ${If} $MBMachineCliRoot == ""
+      ReadEnvStr $MBMachineCliRoot "ProgramFiles"
+    ${EndIf}
+  !macroend
+!endif
 
 !ifmacrondef ModelBridgeDetectDevTunnel
   !macro ModelBridgeDetectDevTunnel
@@ -122,42 +141,31 @@ Var MBEntry
     StrCpy $MBReady "0"
     StrCpy $MBCli ""
     StrCpy $MBDescription "Not found. Install Microsoft's CLI separately, then click Recheck."
-    StrCpy $MBPaths $MBOriginalPath
-    ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "Path"
-    ReadRegStr $1 HKCU "Environment" "Path"
-    ExpandEnvStrings $0 $0
-    ExpandEnvStrings $1 $1
-    StrCpy $MBPaths "$MBPaths;$0;$1"
+    !insertmacro ModelBridgeReadDevTunnelEnvironment
     System::Call 'kernel32::SetEnvironmentVariable(t "PATH", t "$MBPaths") i .r0'
     ${If} $0 == 0
       StrCpy $MBDescription "Could not refresh this installer's PATH. Restart the installer after installing the CLI."
       Return
     ${EndIf}
     Call MBSearchPathList
-    ReadEnvStr $MBRoot "LOCALAPPDATA"
+    StrCpy $MBRoot $MBUserCliRoot
     ${If} $MBRoot != ""
       StrCpy $MBCandidate "$MBRoot\Microsoft\WinGet\Links\devtunnel.exe"
       Call MBConsiderCandidate
     ${EndIf}
-    ReadEnvStr $MBRoot "ProgramW6432"
-    ${If} $MBRoot == ""
-      ReadEnvStr $MBRoot "ProgramFiles"
-    ${EndIf}
+    StrCpy $MBRoot $MBMachineCliRoot
     ${If} $MBRoot != ""
       StrCpy $MBRoot "$MBRoot\WinGet"
       StrCpy $MBCandidate "$MBRoot\Links\devtunnel.exe"
       Call MBConsiderCandidate
     ${EndIf}
     ${If} $MBCli == ""
-      ReadEnvStr $MBRoot "LOCALAPPDATA"
+      StrCpy $MBRoot $MBUserCliRoot
       ${If} $MBRoot != ""
         StrCpy $MBRoot "$MBRoot\Microsoft\WinGet"
         Call MBSearchPackages
       ${EndIf}
-      ReadEnvStr $MBRoot "ProgramW6432"
-      ${If} $MBRoot == ""
-        ReadEnvStr $MBRoot "ProgramFiles"
-      ${EndIf}
+      StrCpy $MBRoot $MBMachineCliRoot
       ${If} $MBRoot != ""
         StrCpy $MBRoot "$MBRoot\WinGet"
         Call MBSearchPackages
@@ -213,6 +221,7 @@ Var MBEntry
 
 !macro customInstall
   Call MBApplyDataFolder
+  Call MBInstallCliPath
 !macroend
 
 Function MBUpdatePrerequisiteStatus

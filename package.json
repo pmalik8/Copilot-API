@@ -6,6 +6,7 @@
   "workspaces": ["apps/modelbridge", "packages/runtime"],
   "scripts": {
     "dev": "bun run --cwd apps/modelbridge dev",
+    "cli": "node apps/modelbridge/out/main/cli.js",
     "build": "bun run --cwd apps/modelbridge build",
     "lint": "eslint --cache .",
     "lint:all": "bun run lint && bun run --cwd packages/runtime lint && bun run --cwd apps/modelbridge lint",

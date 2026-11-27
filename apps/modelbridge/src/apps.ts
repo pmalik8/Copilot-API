@@ -1,18 +1,16 @@
 import type { Protocol } from '@modelbridge/runtime/contracts'
 import type { UsageApp } from '@modelbridge/runtime/usage'
+import type { ConfigurableApp } from '@modelbridge/runtime/apps'
 
-export type HarnessId = 'codex' | 'claude-code' | 'hermes' | 'openclaw'
-export type AppId = HarnessId | 'openai' | 'anthropic'
+type HarnessId = 'codex' | ConfigurableApp
+type ManualAppId = 'openai' | 'anthropic'
 
-export interface AppInfo {
-  id: AppId
+export type AppInfo = {
   name: string
   // The API this app speaks to ModelBridge.
   protocol: Protocol
   description: string
-  // Apps ModelBridge can configure for you; the rest get a copy-ready setup.
-  automatic: boolean
-}
+} & ({ id: HarnessId; automatic: true } | { id: ManualAppId; automatic: false })
 
 export const apps: AppInfo[] = [
   {
@@ -41,6 +39,28 @@ export const apps: AppInfo[] = [
     name: 'OpenClaw',
     protocol: 'chat-completions',
     description: 'Personal assistant gateway for chat apps.',
+    automatic: true,
+  },
+  {
+    id: 'opencode',
+    name: 'OpenCode',
+    protocol: 'chat-completions',
+    description: 'OpenCode 2.x CLI, Web and Desktop with a local server.',
+    automatic: true,
+  },
+  {
+    id: 'deepseek',
+    name: 'DeepSeek Harness (Web)',
+    protocol: 'chat-completions',
+    description: 'The standard web profile started with dsh web.',
+    automatic: true,
+  },
+  {
+    id: 'deepseek-desktop',
+    name: 'DeepSeek Harness (Desktop)',
+    protocol: 'chat-completions',
+    description:
+      'The standard profile used by the DeepSeek Harness desktop app.',
     automatic: true,
   },
   {
@@ -77,6 +97,8 @@ export const usageAppLabels: Record<UsageApp | 'unknown', string> = {
   'claude-code': 'Claude Code',
   hermes: 'Hermes Agent',
   openclaw: 'OpenClaw',
+  opencode: 'OpenCode',
+  deepseek: 'DeepSeek Harness',
   playground: 'Playground',
   other: 'Other tools',
   unknown: 'Earlier requests (app not recorded)',

@@ -13,5 +13,5 @@
     "noUnusedParameters": true,
     "types": ["node", "bun"]
   },
-  "include": ["electron/**/*.ts", "src/**/*", "tests/**/*.ts", "electron.vite.config.ts"]
+  "include": ["electron/**/*.ts", "cli/**/*.ts", "src/**/*", "tests/**/*.ts", "electron.vite.config.ts"]
 }
